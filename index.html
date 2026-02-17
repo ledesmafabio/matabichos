@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Hand Tracking Mobile - 10 Niveles</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils"></script>
+    <style>
+        body { margin: 0; padding: 0; background: #000; color: white; font-family: sans-serif; overflow: hidden; touch-action: none; }
+        
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; padding: 15px; z-index: 10; pointer-events: none; box-sizing: border-box; }
+        .stats h2, .stats h3 { margin: 2px 0; font-size: 1.1rem; text-shadow: 2px 2px 4px #000; }
+        
+        #btnReglas { position: absolute; top: 15px; right: 15px; pointer-events: auto; padding: 8px 12px; background: #222; color: #0f0; border: 1px solid #0f0; border-radius: 5px; font-weight: bold; font-size: 0.8rem; }
+
+        #overlay { display: flex; position: fixed; z-index: 100; left: 0; top: 0; width: 100%; height: 100%; background: #000; justify-content: center; align-items: center; text-align: center; }
+        .card { background: #111; padding: 25px; border-radius: 20px; border: 2px solid #0f0; width: 85%; max-width: 400px; }
+        
+        button#startBtn { 
+            padding: 15px 30px; cursor: pointer; background: #0f0; color: #000; 
+            border: none; border-radius: 50px; font-weight: bold; font-size: 1.2em;
+            box-shadow: 0 5px 15px rgba(0,255,0,0.3); margin-top: 20px;
+        }
+
+        .multiplier-active { color: #ff0; animation: blink 0.5s infinite; font-weight: bold; }
+        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="stats">
+            <h2 id="scoreLabel">Puntos: 0</h2>
+            <h3 id="levelLabel">Nivel: 1</h3>
+            <h3 id="timerLabel">Tiempo: 30s</h3>
+            <div id="multiplierLabel"></div>
+        </div>
+        <button id="btnReglas" onclick="showRules()">REGLAS</button>
+    </div>
+
+    <div id="overlay">
+        <div class="card">
+            <h2 style="color: #0f0">HAND TRACKING POP!</h2>
+            <p>1. Presiona Iniciar.<br>2. Acepta el permiso de <b>Cámara</b>.<br>3. Usa tu dedo índice para explotar los círculos.</p>
+            <div style="text-align: left; font-size: 0.9em; display: inline-block; margin-top: 10px;">
+                <li>🔴 <b>Círculos:</b> Puntos.</li>
+                <li>🟨 <b>Cuadrados:</b> Puntos x2.</li>
+                <li>🔺 <b>Triángulos:</b> Pierdes puntos.</li>
+            </div>
+            <button id="startBtn">INICIAR CÁMARA</button>
+        </div>
+    </div>
+
+<script>
+let video, hands, camera;
+let fingerX = 0, fingerY = 0, handVisible = false;
+let points = [], specials = [], particles = [];
+let score = 0, level = 1, timeLeft = 30;
+let isPaused = true, lastSecond = 0;
+let multiplier = 1, multiplierTimer = 0;
+
+// --- CONFIGURACIÓN DE CÁMARA Y HANDS ---
+async function initCamera() {
+    video = createCapture({
+        audio: false,
+        video: {
+            facingMode: "user",
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+        }
+    }, () => {
+        console.log("Cámara iniciada");
+    });
+    video.size(windowWidth, windowHeight);
+    video.hide();
+
+    hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+    hands.setOptions({
+        maxNumHands: 1,
+        modelComplexity: 0, // 0 para mejor rendimiento en móviles
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+    });
+    hands.onResults(onResults);
+
+    camera = new Camera(video.elt, {
+        onFrame: async () => {
+            await hands.send({image: video.elt});
+        }
+    });
+    camera.start();
+    
+    document.getElementById('overlay').style.display = 'none';
+    isPaused = false;
+    lastSecond = millis();
+}
+
+function onResults(results) {
+    handVisible = (results.multiHandLandmarks && results.multiHandLandmarks.length > 0);
+    if (handVisible) {
+        let indexFinger = results.multiHandLandmarks[0][8];
+        fingerX = (1 - indexFinger.x) * width;
+        fingerY = indexFinger.y * height;
+    }
+}
+
+function setup() {
+    createCanvas(windowWidth, windowHeight);
+    initLevel();
+}
+
+function draw() {
+    if (isPaused) return;
+
+    // Dibujar Video Espejado de Fondo
+    push();
+    translate(width, 0);
+    scale(-1, 1);
+    image(video, 0, 0, width, height);
+    pop();
+    background(0, 160); // Capa de oscuridad para ver el juego
+
+    // Tiempo
+    if (millis() - lastSecond > 1000) {
+        timeLeft--;
+        lastSecond = millis();
+        if (timeLeft <= 0) nextLevel();
+        if (multiplierTimer > 0) {
+            multiplierTimer--;
+            if (multiplierTimer <= 0) multiplier = 1;
+        }
+    }
+
+    // Elementos
+    for (let i = points.length - 1; i >= 0; i--) {
+        let p = points[i];
+        p.x += p.vx; p.y += p.vy;
+        if (p.x < 0 || p.x > width) p.vx *= -1;
+        if (p.y < 0 || p.y > height) p.vy *= -1;
+        fill(p.col); noStroke();
+        ellipse(p.x, p.y, p.size);
+
+        if (handVisible && dist(fingerX, fingerY, p.x, p.y) < p.size/2) {
+            explode(p.x, p.y, p.col);
+            score += 10 * multiplier;
+            points.splice(i, 1);
+            spawnCircle();
+        }
+    }
+
+    for (let i = specials.length - 1; i >= 0; i--) {
+        let s = specials[i];
+        s.life -= 1/60;
+        if (s.life <= 0) { specials.splice(i, 1); continue; }
+
+        push();
+        translate(s.x, s.y);
+        rotate(frameCount * 0.05);
+        if (s.type === 'powerup') {
+            fill(255, 255, 0); rect(-20, -20, 40, 40);
+        } else {
+            fill(255, 0, 50); triangle(0, -25, 25, 20, -25, 20);
+        }
+        pop();
+
+        if (handVisible && dist(fingerX, fingerY, s.x, s.y) < 30) {
+            if (s.type === 'powerup') { multiplier = 2; multiplierTimer = 5; }
+            else { score = Math.floor(score * 0.5); }
+            specials.splice(i, 1);
+        }
+    }
+
+    if (frameCount % 180 === 0) spawnSpecial();
+
+    // Partículas
+    for (let i = particles.length - 1; i >= 0; i--) {
+        particles[i].update(); particles[i].show();
+        if (particles[i].done()) particles.splice(i, 1);
+    }
+
+    // UI
+    updateUI();
+
+    // Puntero
+    if (handVisible) {
+        fill(0, 255, 0); stroke(255); strokeWeight(2);
+        circle(fingerX, fingerY, 25);
+    }
+}
+
+function updateUI() {
+    document.getElementById('scoreLabel').innerText = `Puntos: ${score}`;
+    document.getElementById('levelLabel').innerText = `Nivel: ${level}`;
+    document.getElementById('timerLabel').innerText = `Tiempo: ${timeLeft}s`;
+    let m = document.getElementById('multiplierLabel');
+    m.innerHTML = multiplier > 1 ? `<span class="multiplier-active">¡X2 ACTIVO! (${multiplierTimer}s)</span>` : "";
+}
+
+function initLevel() {
+    points = []; specials = [];
+    let n = 4 + (level * 2);
+    for (let i = 0; i < n; i++) spawnCircle();
+}
+
+function spawnCircle() {
+    points.push({
+        x: random(50, width-50), y: random(50, height-50),
+        vx: random(-1.5 - level*0.4, 1.5 + level*0.4),
+        vy: random(-1.5 - level*0.4, 1.5 + level*0.4),
+        size: random(50, 80), col: color(random(100,255), 100, 255, 200)
+    });
+}
+
+function spawnSpecial() {
+    specials.push({
+        x: random(50, width-50), y: random(50, height-50),
+        type: random() > 0.5 ? 'powerup' : 'hazard', life: 3
+    });
+}
+
+function nextLevel() {
+    if (level < 10) { level++; timeLeft = 30; initLevel(); } 
+    else { alert("¡FIN! Score: " + score); level = 1; score = 0; initLevel(); }
+}
+
+function showRules() { isPaused = true; document.getElementById('overlay').style.display = 'flex'; }
+
+document.getElementById('startBtn').onclick = () => {
+    initCamera();
+};
+
+function explode(x, y, col) {
+    for (let i = 0; i < 8; i++) particles.push(new Particle(x, y, col));
+}
+
+class Particle {
+    constructor(x, y, col) {
+        this.pos = createVector(x, y);
+        this.v = p5.Vector.random2D().mult(random(2, 5));
+        this.a = 255; this.c = col;
+    }
+    update() { this.pos.add(this.v); this.a -= 10; }
+    done() { return this.a <= 0; }
+    show() { noStroke(); fill(red(this.c), green(this.c), blue(this.c), this.a); ellipse(this.pos.x, this.pos.y, 6); }
+}
+
+function windowResized() { resizeCanvas(windowWidth, windowHeight); if(video) video.size(width, height); }
+</script>
+</body>
+</html>
